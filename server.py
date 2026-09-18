@@ -288,11 +288,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="field-label">Note / Context</div>
       <div id="resNote" style="font-size:13px; color:#475569;"></div>
     </div>
-
-    <div class="field-row">
-      <div class="field-label">Raw Structured JSON</div>
-      <pre id="resRaw"></pre>
-    </div>
   </div>
 </div>
 
@@ -360,9 +355,6 @@ async function submitQuery(e) {
     } else {
       document.getElementById('noteContainer').style.display = 'none';
     }
-
-    // Raw JSON
-    document.getElementById('resRaw').innerText = JSON.stringify(data, null, 2);
 
   } catch (err) {
     alert('Query failed: ' + err);
