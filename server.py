@@ -35,9 +35,12 @@ from atlas import StudySentinel
 from data_loader import to_float
 from evidence import make_record_ref, record_ref_exists
 from rules import VISIT_DAYS
+from monitor import AtlasMonitorPipeline, global_memory, EscalationItem
 
 # Global sentinel instance (loaded once on startup)
 sentinel: StudySentinel | None = None
+pipeline: AtlasMonitorPipeline | None = None
+
 
 
 def parse_and_route_query(q: str, sent: StudySentinel) -> dict[str, Any]:
@@ -696,7 +699,54 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .node-critical .node-bg { stroke: #dc2626 !important; stroke-width: 2.5px; }
   .edge-line { stroke: #cbd5e1; stroke-width: 1.5px; transition: stroke 0.15s, stroke-width 0.15s; }
   .edge-highlight { stroke: #0284c7 !important; stroke-width: 2.5px !important; }
-  .edge-label { font-size: 9px; fill: #64748b; font-family: monospace; pointer-events: none; }
+  /* Monitor Styles */
+  .pipeline-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px; margin: 16px 0;
+  }
+  .pipe-card {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 10px; font-size: 12px;
+  }
+  .pipe-num { font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; }
+  .pipe-name { font-size: 12px; font-weight: 700; color: #0f172a; margin: 2px 0 6px 0; }
+  .pipe-val { font-size: 18px; font-weight: 700; color: #0284c7; }
+  .pipe-sub { font-size: 11px; color: #64748b; margin-top: 2px; }
+
+  .monitor-table {
+    width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px;
+    background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;
+  }
+  .monitor-table th {
+    background: #f1f5f9; padding: 8px 10px; text-align: left;
+    font-weight: 700; color: #475569; border-bottom: 1px solid #e2e8f0;
+  }
+  .monitor-table td {
+    padding: 8px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top;
+  }
+  .monitor-table tr:hover { background: #f8fafc; }
+
+  .action-btn {
+    padding: 4px 8px; font-size: 11px; font-weight: 600; border-radius: 4px;
+    border: none; cursor: pointer; margin-right: 4px;
+  }
+  .btn-approve { background: #16a34a; color: white; }
+  .btn-approve:hover { background: #15803d; }
+  .btn-reject { background: #dc2626; color: white; }
+  .btn-reject:hover { background: #b91c1c; }
+  .btn-clarify { background: #d97706; color: white; }
+  .btn-clarify:hover { background: #b45309; }
+
+  .report-box {
+    background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px;
+    padding: 16px; margin-top: 16px;
+  }
+  .report-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 12px; margin: 12px 0;
+  }
+  .report-stat-label { font-size: 11px; color: #64748b; font-weight: 600; }
+  .report-stat-val { font-size: 18px; font-weight: 700; color: #0f172a; }
 </style>
 </head>
 <body>
@@ -709,6 +759,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="nav-tabs">
       <button id="tabAgent" class="tab-btn active" onclick="switchView('agent')">Agent</button>
       <button id="tabGraph" class="tab-btn" onclick="switchView('graph')">Study Graph</button>
+      <button id="tabMonitor" class="tab-btn" onclick="switchView('monitor')">Monitor</button>
     </div>
   </div>
 
@@ -864,7 +915,206 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <div id="detRecordRef" class="detail-item-value"><span class="ref-tag verified">DM|042-S07-001|1</span></div>
         </div>
       </div>
-      <div id="detExtraTable" style="margin-top:12px; font-size:12px; color:#475569;"></div>
+    </div>
+  </div>
+
+  <!-- VIEW 3: Problem 2 MONITOR & Decision Center -->
+  <div id="monitorView" style="display:none;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
+      <div>
+        <div style="font-size:16px; font-weight:700; color:#0f172a;">ATLAS MONITOR &mdash; Evidence-to-Action Pipeline</div>
+        <div style="font-size:13px; color:#64748b;">Autonomous Clinical Surveillance with Cross-Cycle Memory &amp; Medical Monitor Adjudication</div>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <label style="font-size:12px; font-weight:600; color:#475569;">Data Cut:</label>
+        <select id="monitorCutSelect" style="padding:6px 10px; font-size:13px; border:1px solid #cbd5e1; border-radius:4px;">
+          <option value="12" selected>Cut 12 (Protocol v3)</option>
+          <option value="11">Cut 11 (Protocol v3)</option>
+          <option value="10">Cut 10 (Protocol v3)</option>
+          <option value="9">Cut 9 (Protocol v3)</option>
+          <option value="8">Cut 8 (Protocol v2)</option>
+          <option value="7">Cut 7 (Protocol v2)</option>
+          <option value="6">Cut 6 (Protocol v2)</option>
+          <option value="5">Cut 5 (Protocol v2)</option>
+          <option value="4">Cut 4 (Protocol v1)</option>
+          <option value="3">Cut 3 (Protocol v1)</option>
+          <option value="2">Cut 2 (Protocol v1)</option>
+          <option value="1">Cut 1 (Protocol v1)</option>
+        </select>
+        <button class="submit-btn" id="runMonitorBtn" onclick="runMonitorCycle(false)">Run Monitor Cycle</button>
+        <button class="filter-btn" onclick="runMonitorCycle(true)" title="Auto-adjudicate pending escalations per Medical Monitor rules">Auto-Adjudicate</button>
+        <button class="filter-btn" style="color:#dc2626;" onclick="resetMonitorMemory()" title="Clear cross-cycle memory">Reset Memory</button>
+      </div>
+    </div>
+
+    <!-- 6-Module Status Grid -->
+    <div class="pipeline-grid">
+      <div class="pipe-card">
+        <div class="pipe-num">Module 1</div>
+        <div class="pipe-name">Finding Intake</div>
+        <div class="pipe-val" id="pipeFindings">-</div>
+        <div class="pipe-sub">Stage 1 Ingested</div>
+      </div>
+      <div class="pipe-card">
+        <div class="pipe-num">Module 2</div>
+        <div class="pipe-name">Risk Assessment</div>
+        <div class="pipe-val" id="pipeRisks">-</div>
+        <div class="pipe-sub">Safety Triaged</div>
+      </div>
+      <div class="pipe-card">
+        <div class="pipe-num">Module 3</div>
+        <div class="pipe-name">Action Planner</div>
+        <div class="pipe-val" id="pipeActions">-</div>
+        <div class="pipe-sub">Query / Escalate</div>
+      </div>
+      <div class="pipe-card">
+        <div class="pipe-num">Module 4</div>
+        <div class="pipe-name">Compliance Check</div>
+        <div class="pipe-val" id="pipeCompliance">-</div>
+        <div class="pipe-sub">Protocol Deviations</div>
+      </div>
+      <div class="pipe-card">
+        <div class="pipe-num">Module 5</div>
+        <div class="pipe-name">Decision Center</div>
+        <div class="pipe-val" id="pipeDecisions">-</div>
+        <div class="pipe-sub">Pending Escalations</div>
+      </div>
+      <div class="pipe-card">
+        <div class="pipe-num">Module 6</div>
+        <div class="pipe-name">Memory + Action</div>
+        <div class="pipe-val" id="pipeCycles">-</div>
+        <div class="pipe-sub">Cycles Executed</div>
+      </div>
+    </div>
+
+    <!-- Section 1: Pending Escalations & Decision Center -->
+    <div style="margin-top:20px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:14px; font-weight:700; color:#0f172a;">
+          5. DECISION CENTER &mdash; Medical Monitor Escalations
+        </div>
+        <span style="font-size:12px; color:#64748b;">Human Oversight &amp; Protocol Adjudication</span>
+      </div>
+      <table class="monitor-table" id="escalationsTable">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Subject</th>
+            <th>Finding / Title</th>
+            <th>Severity</th>
+            <th>Evidence RecordRefs</th>
+            <th>Status</th>
+            <th style="min-width:180px;">Action</th>
+          </tr>
+        </thead>
+        <tbody id="escalationsBody">
+          <tr><td colspan="7" style="text-align:center; color:#94a3b8; padding:20px;">No monitor cycle run yet. Click "Run Monitor Cycle" above.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Section 2: Active Data Queries -->
+    <div style="margin-top:24px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:14px; font-weight:700; color:#0f172a;">
+          3. ACTION PLANNER &mdash; Data Queries Sent to Sites
+        </div>
+        <span style="font-size:12px; color:#64748b;">Deduplicated RecordRef Inquiries</span>
+      </div>
+      <table class="monitor-table" id="queriesTable">
+        <thead>
+          <tr>
+            <th>Subject</th>
+            <th>Domain</th>
+            <th>RecordRef</th>
+            <th>Actionable Query Details</th>
+            <th>Site Reply Status</th>
+          </tr>
+        </thead>
+        <tbody id="queriesBody">
+          <tr><td colspan="5" style="text-align:center; color:#94a3b8; padding:16px;">No queries dispatched.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Section 3: Protocol Compliance & Deviations -->
+    <div style="margin-top:24px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:14px; font-weight:700; color:#0f172a;">
+          4. COMPLIANCE CHECK &mdash; Protocol Deviations by Version
+        </div>
+        <span style="font-size:12px; color:#64748b;">Version-Aware Auditing</span>
+      </div>
+      <table class="monitor-table" id="deviationsTable">
+        <thead>
+          <tr>
+            <th>Dev ID</th>
+            <th>Subject</th>
+            <th>Violation Type</th>
+            <th>Cited Protocol Rule</th>
+            <th>Version</th>
+            <th>RecordRef</th>
+          </tr>
+        </thead>
+        <tbody id="deviationsBody">
+          <tr><td colspan="6" style="text-align:center; color:#94a3b8; padding:16px;">No deviations tracked.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Section 4: Live Decision & Action Audit Trace -->
+    <div style="margin-top:24px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:14px; font-weight:700; color:#0f172a;">
+          6. AUDIT TRAIL &mdash; Live Decision &amp; Action Trace
+        </div>
+        <span style="font-size:12px; color:#64748b;">Continuous Real-Time Logging</span>
+      </div>
+      <table class="monitor-table" id="traceTable">
+        <thead>
+          <tr>
+            <th style="width:140px;">Timestamp</th>
+            <th style="width:120px;">Module</th>
+            <th style="width:120px;">Decision</th>
+            <th>Reason &amp; Rationale</th>
+            <th style="width:160px;">RecordRefs</th>
+          </tr>
+        </thead>
+        <tbody id="traceBody">
+          <tr><td colspan="5" style="text-align:center; color:#94a3b8; padding:16px;">No trace events recorded yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Section 5: Review Report -->
+    <div class="report-box" id="reviewReportBox" style="display:none;">
+      <div style="font-size:15px; font-weight:700; color:#0f172a;">
+        Review Report &mdash; Cut <span id="repCut">-</span> (Protocol v<span id="repVer">-</span>)
+      </div>
+      <div class="report-grid">
+        <div>
+          <div class="report-stat-label">Findings Ingested</div>
+          <div class="report-stat-val" id="repFindings">0</div>
+        </div>
+        <div>
+          <div class="report-stat-label">Active Queries</div>
+          <div class="report-stat-val" id="repQueries">0</div>
+        </div>
+        <div>
+          <div class="report-stat-label">Protocol Deviations</div>
+          <div class="report-stat-val" id="repDeviations">0</div>
+        </div>
+        <div>
+          <div class="report-stat-label">Escalations</div>
+          <div class="report-stat-val" id="repEscalations">0</div>
+        </div>
+        <div>
+          <div class="report-stat-label">Human Decisions</div>
+          <div class="report-stat-val" id="repHumanDecisions" style="font-size:13px; color:#0284c7; margin-top:4px;">-</div>
+        </div>
+      </div>
+      <div id="repSiteFlags" style="margin-top:8px; font-size:12px; color:#b91c1c; font-weight:600;"></div>
+      <div style="margin-top:8px; font-size:13px; color:#334155; line-height:1.4;" id="repSummary">-</div>
     </div>
   </div>
 </div>
@@ -874,22 +1124,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 function switchView(view) {
   const tabAgent = document.getElementById('tabAgent');
   const tabGraph = document.getElementById('tabGraph');
+  const tabMonitor = document.getElementById('tabMonitor');
   const agentView = document.getElementById('agentView');
   const graphView = document.getElementById('graphView');
+  const monitorView = document.getElementById('monitorView');
 
-  if (view === 'agent') {
-    tabAgent.className = 'tab-btn active';
-    tabGraph.className = 'tab-btn';
-    agentView.style.display = 'block';
-    graphView.style.display = 'none';
-  } else {
-    tabAgent.className = 'tab-btn';
-    tabGraph.className = 'tab-btn active';
-    agentView.style.display = 'none';
-    graphView.style.display = 'block';
-    if (!currentGraphData) {
-      loadSubjectGraph();
-    }
+  tabAgent.className = 'tab-btn' + (view === 'agent' ? ' active' : '');
+  tabGraph.className = 'tab-btn' + (view === 'graph' ? ' active' : '');
+  tabMonitor.className = 'tab-btn' + (view === 'monitor' ? ' active' : '');
+
+  agentView.style.display = (view === 'agent' ? 'block' : 'none');
+  graphView.style.display = (view === 'graph' ? 'block' : 'none');
+  monitorView.style.display = (view === 'monitor' ? 'block' : 'none');
+
+  if (view === 'graph' && !currentGraphData) {
+    loadSubjectGraph();
+  } else if (view === 'monitor' && !currentMonitorData) {
+    // Optionally trigger initial load of monitor status
+    fetch('/api/monitor/status')
+      .then(r => r.json())
+      .then(d => { if (d.report) renderMonitorView(d); })
+      .catch(() => {});
   }
 }
 
@@ -1410,6 +1665,215 @@ function enableDrag(nodeElem, nodeId, positions) {
 
   window.addEventListener('mouseup', () => { dragging = false; });
 }
+
+// -------------------------------------------------------------
+// View 3: Monitor & Decision Center Logic
+// -------------------------------------------------------------
+let currentMonitorData = null;
+
+async function runMonitorCycle(autoAdjudicate = false) {
+  const cut = document.getElementById('monitorCutSelect').value;
+  const btn = document.getElementById('runMonitorBtn');
+  btn.disabled = true;
+  btn.innerText = 'Running Pipeline...';
+
+  try {
+    const resp = await fetch(`/api/monitor/run?cut=${cut}&auto=${autoAdjudicate}`);
+    const data = await resp.json();
+    currentMonitorData = data;
+    renderMonitorView(data);
+  } catch (err) {
+    alert('Failed to execute monitor cycle: ' + err);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = 'Run Monitor Cycle';
+  }
+}
+
+async function adjudicateEscalation(escId, action) {
+  let customReason = '';
+  if (action === 'CLARIFY') {
+    customReason = prompt(
+      'Medical Monitor Clarification Question (or press OK for default):',
+      'What was the ALT at screening, and is there a concomitant hepatotoxic medication?'
+    );
+    if (customReason === null) return;
+  } else if (action === 'REJECTED') {
+    customReason = prompt(
+      'Rejection Rationale (or press OK for default):',
+      'Baseline transaminases were already elevated; monitor, do not escalate.'
+    );
+    if (customReason === null) return;
+  }
+
+  try {
+    const resp = await fetch('/api/monitor/decision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: escId, action: action, reason: customReason })
+    });
+    const res = await resp.json();
+    if (res.status === 'success') {
+      const cut = document.getElementById('monitorCutSelect').value;
+      const r = await fetch(`/api/monitor/status?cut=${cut}`);
+      const freshData = await r.json();
+      currentMonitorData = freshData;
+      renderMonitorView(freshData);
+    } else {
+      alert('Decision error: ' + (res.message || 'unknown error'));
+    }
+  } catch (err) {
+    alert('Error adjudicating escalation: ' + err);
+  }
+}
+
+async function resetMonitorMemory() {
+  if (!confirm('Are you sure you want to reset cross-cycle monitor memory?')) return;
+  try {
+    await fetch('/api/monitor/reset', { method: 'POST' });
+    const cut = document.getElementById('monitorCutSelect').value;
+    const r = await fetch(`/api/monitor/status?cut=${cut}`);
+    const freshData = await r.json();
+    currentMonitorData = freshData;
+    renderMonitorView(freshData);
+  } catch (err) {
+    alert('Error resetting memory: ' + err);
+  }
+}
+
+function renderMonitorView(data) {
+  if (!data) return;
+
+  // Pipeline Cards
+  const report = data.report || {};
+  document.getElementById('pipeFindings').innerText = report.finding_count !== undefined ? report.finding_count : (data.findings ? data.findings.length : 0);
+  document.getElementById('pipeRisks').innerText = report.finding_count !== undefined ? report.finding_count : 0;
+  document.getElementById('pipeActions').innerText = (report.new_query_count !== undefined ? report.new_query_count : 0) + ' / ' + (report.new_escalation_count !== undefined ? report.new_escalation_count : 0);
+  document.getElementById('pipeCompliance').innerText = report.deviation_count !== undefined ? report.deviation_count : (data.deviations ? data.deviations.length : 0);
+  document.getElementById('pipeDecisions').innerText = report.human_decisions ? (report.human_decisions.PENDING || 0) : (data.escalations ? data.escalations.filter(e => e.status === 'PENDING').length : 0);
+  document.getElementById('pipeCycles').innerText = data.cycle || 1;
+
+  // Escalations Table
+  const escBody = document.getElementById('escalationsBody');
+  const escalations = data.escalations || [];
+  if (escalations.length === 0) {
+    escBody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#64748b; padding:16px;">No escalations pending.</td></tr>';
+  } else {
+    escBody.innerHTML = escalations.map(e => {
+      let statusBadge = '<span class="status-tag status-insufficient_evidence">PENDING</span>';
+      if (e.status === 'APPROVED') statusBadge = '<span class="status-tag status-supported">APPROVED</span>';
+      else if (e.status === 'REJECTED') statusBadge = '<span class="status-tag status-not_found">REJECTED</span>';
+      else if (e.status === 'CLARIFIED_APPROVED') statusBadge = '<span class="status-tag status-supported" style="background:#e0f2fe; color:#0369a1;">CLARIFIED &amp; APPROVED</span>';
+
+      const refs = (e.record_refs || []).map(r => `<span class="ref-tag">${r}</span>`).join(' ');
+
+      let actionHtml = '';
+      if (e.status === 'PENDING') {
+        actionHtml = `
+          <button class="action-btn btn-approve" onclick="adjudicateEscalation('${e.escalation_id}', 'APPROVED')">Approve</button>
+          <button class="action-btn btn-reject" onclick="adjudicateEscalation('${e.escalation_id}', 'REJECTED')">Reject</button>
+          <button class="action-btn btn-clarify" onclick="adjudicateEscalation('${e.escalation_id}', 'CLARIFY')">Clarify</button>
+        `;
+      } else {
+        actionHtml = `<span style="font-size:11px; color:#64748b;">${e.decision_reason || 'Decision recorded'}</span>`;
+        if (e.clarification_answer) {
+          actionHtml += `<div style="font-size:11px; color:#0369a1; margin-top:2px;"><b>ATLAS Evidence:</b> ${e.clarification_answer}</div>`;
+        }
+      }
+
+      return `<tr>
+        <td><b>${e.escalation_id}</b></td>
+        <td><code>${e.usubjid}</code></td>
+        <td><b>${e.title || e.finding_code}</b><div style="color:#64748b; font-size:11px;">${e.description}</div></td>
+        <td><span style="font-weight:700; color:${e.severity==='CRITICAL'?'#dc2626':'#d97706'}">${e.severity}</span></td>
+        <td>${refs}</td>
+        <td>${statusBadge}</td>
+        <td>${actionHtml}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Queries Table
+  const qBody = document.getElementById('queriesBody');
+  const queries = data.queries || [];
+  if (queries.length === 0) {
+    qBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#64748b; padding:16px;">No queries dispatched.</td></tr>';
+  } else {
+    qBody.innerHTML = queries.slice(0, 30).map(q => {
+      let replyBadge = '<span style="color:#64748b; font-size:11px;">Pending site reply</span>';
+      if (q.site_reply) {
+        replyBadge = `<span style="color:#16a34a; font-weight:600; font-size:11px;">${q.site_reply}</span>`;
+      }
+      return `<tr>
+        <td><code>${q.usubjid}</code></td>
+        <td><b>${q.domain}</b></td>
+        <td><span class="ref-tag">${q.record_ref}</span></td>
+        <td><b>${q.title}</b><div style="font-size:11px; color:#64748b;">${q.details}</div></td>
+        <td>${replyBadge}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Deviations Table
+  const devBody = document.getElementById('deviationsBody');
+  const deviations = data.deviations || [];
+  if (deviations.length === 0) {
+    devBody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#64748b; padding:16px;">No deviations tracked.</td></tr>';
+  } else {
+    devBody.innerHTML = deviations.slice(0, 25).map(d => `<tr>
+      <td><b>${d.deviation_id}</b></td>
+      <td><code>${d.usubjid}</code></td>
+      <td><span style="font-weight:600; color:#b91c1c;">${d.deviation_type}</span></td>
+      <td>${d.rule_cited}<div style="font-size:11px; color:#64748b;">${d.details}</div></td>
+      <td>v${d.protocol_version}</td>
+      <td><span class="ref-tag">${d.record_ref}</span></td>
+    </tr>`).join('');
+  }
+
+  // Trace Table
+  const trBody = document.getElementById('traceBody');
+  const trace = (report.trace || data.trace || []).slice(-25).reverse();
+  if (trace.length === 0) {
+    trBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#64748b; padding:16px;">No trace events recorded.</td></tr>';
+  } else {
+    trBody.innerHTML = trace.map(t => {
+      const refs = (t.record_refs || []).slice(0, 4).map(r => `<span class="ref-tag" style="font-size:10px;">${r}</span>`).join(' ');
+      return `<tr>
+        <td style="font-family:monospace; font-size:11px; color:#64748b;">${t.timestamp}</td>
+        <td><b>${t.module}</b></td>
+        <td><span class="badge" style="font-weight:700;">${t.decision}</span></td>
+        <td>${t.reason}</td>
+        <td>${refs}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Review Report Box
+  if (data.report) {
+    document.getElementById('reviewReportBox').style.display = 'block';
+    document.getElementById('repCut').innerText = report.cut || '-';
+    document.getElementById('repVer').innerText = report.protocol_version || '-';
+    document.getElementById('repFindings').innerText = report.finding_count || 0;
+    document.getElementById('repQueries').innerText = `${report.query_count || 0} (${report.new_query_count || 0} new)`;
+    document.getElementById('repDeviations').innerText = report.deviation_count || 0;
+    document.getElementById('repEscalations').innerText = `${report.escalation_count || 0} (${report.new_escalation_count || 0} new)`;
+
+    const hd = report.human_decisions || {};
+    document.getElementById('repHumanDecisions').innerText =
+      `Pending: ${hd.PENDING||0} | Approved: ${hd.APPROVED||0} | Rejected: ${hd.REJECTED||0} | Clarified: ${hd.CLARIFIED_APPROVED||0}`;
+
+    const flags = report.site_flags || {};
+    const flagKeys = Object.keys(flags);
+    const flagElem = document.getElementById('repSiteFlags');
+    if (flagKeys.length > 0) {
+      flagElem.innerText = '⚠ Site Flags: ' + flagKeys.map(k => `${k}: ${flags[k]}`).join(' | ');
+    } else {
+      flagElem.innerText = '';
+    }
+
+    document.getElementById('repSummary').innerText = report.summary || '';
+  }
+}
 </script>
 </body>
 </html>
@@ -1445,6 +1909,67 @@ class AtlasRequestHandler(BaseHTTPRequestHandler):
                 sentinel = StudySentinel(cut=12)
             graph_data = build_subject_graph(subject, sentinel)
             body = json.dumps(graph_data, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        elif parsed.path == "/api/monitor/status":
+            params = parse_qs(parsed.query)
+            cut_arg = int(params.get("cut", [str(sentinel.cut if sentinel else 12)])[0])
+            if sentinel is None or sentinel.cut != cut_arg:
+                sentinel = StudySentinel(cut=cut_arg)
+            pipeline = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
+            deviations = pipeline.compliance.check_compliance()
+            findings = pipeline.intake.run()
+            decision_counts = {
+                "PENDING": sum(1 for e in global_memory.escalations.values() if e.status == "PENDING"),
+                "APPROVED": sum(1 for e in global_memory.escalations.values() if e.status == "APPROVED"),
+                "REJECTED": sum(1 for e in global_memory.escalations.values() if e.status == "REJECTED"),
+                "CLARIFIED_APPROVED": sum(1 for e in global_memory.escalations.values() if e.status == "CLARIFIED_APPROVED"),
+            }
+            report = {
+                "cut": sentinel.cut,
+                "protocol_version": sentinel.protocol_version,
+                "finding_count": len(findings),
+                "query_count": len(global_memory.active_queries),
+                "new_query_count": 0,
+                "deviation_count": len(deviations),
+                "escalation_count": len(global_memory.escalations),
+                "new_escalation_count": 0,
+                "human_decisions": decision_counts,
+                "site_flags": global_memory.site_flags,
+                "trace": [t.to_dict() for t in global_memory.trace],
+                "summary": f"Monitor status for Cut {sentinel.cut} (v{sentinel.protocol_version}). Cycle count: {global_memory.cycle_count}."
+            }
+            res_obj = {
+                "status": "success",
+                "cycle": global_memory.cycle_count,
+                "report": report,
+                "findings": [f.to_dict() for f in findings[:30]],
+                "queries": [q.to_dict() for q in global_memory.active_queries],
+                "deviations": [d.to_dict() for d in deviations[:30]],
+                "escalations": [e.to_dict() for e in global_memory.escalations.values()],
+            }
+            body = json.dumps(res_obj, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        elif parsed.path == "/api/monitor/run":
+            params = parse_qs(parsed.query)
+            cut_arg = int(params.get("cut", [str(sentinel.cut if sentinel else 12)])[0])
+            auto_adj = params.get("auto", ["false"])[0].lower() in ("true", "1")
+            if sentinel is None or sentinel.cut != cut_arg:
+                sentinel = StudySentinel(cut=cut_arg)
+            pipeline = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
+            res_obj = pipeline.run_cycle(auto_adjudicate=auto_adj)
+            body = json.dumps(res_obj, indent=2).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1505,11 +2030,99 @@ class AtlasRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.send_header("Content-Length", "0")
+        elif parsed.path == "/api/monitor/run":
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
+            try:
+                data = json.loads(post_body)
+            except Exception:
+                data = {}
+            cut_arg = int(data.get("cut", sentinel.cut if sentinel else 12))
+            auto_adj = bool(data.get("auto_adjudicate", False))
+            if sentinel is None or sentinel.cut != cut_arg:
+                sentinel = StudySentinel(cut=cut_arg)
+            pipeline = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
+            res_obj = pipeline.run_cycle(auto_adjudicate=auto_adj)
+            body = json.dumps(res_obj, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Connection", "close")
             self.end_headers()
+            self.wfile.write(body)
+        elif parsed.path == "/api/monitor/decision":
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_len).decode("utf-8")
+            try:
+                data = json.loads(post_body)
+            except Exception:
+                data = {}
+            esc_id = data.get("id", "")
+            action = data.get("action", "APPROVED")
+            reason = data.get("reason", "")
+
+            if sentinel is None:
+                sentinel = StudySentinel(cut=12)
+            pipeline = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
+
+            esc_item = global_memory.escalations.get(esc_id)
+            if not esc_item:
+                body = json.dumps({"status": "error", "message": f"Escalation {esc_id} not found"}).encode("utf-8")
+                self.send_response(404)
+            else:
+                updated = pipeline.decision_center.adjudicate(esc_item, action=action, custom_reason=reason, memory=global_memory)
+                body = json.dumps({"status": "success", "escalation": updated.to_dict()}, indent=2).encode("utf-8")
+                self.send_response(200)
+
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        elif parsed.path == "/api/monitor/reset":
+            global_memory.reset()
+            body = json.dumps({"status": "reset", "cycle": 0}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        elif parsed.path == "/queries":
+            # PDF compatibility mock endpoint
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
+            try:
+                data = json.loads(post_body)
+            except Exception:
+                data = {}
+            body = json.dumps({"status": "created", "query_id": f"QRY-{len(global_memory.sent_queries)+1:04d}", "received": data}).encode("utf-8")
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        elif parsed.path == "/escalations":
+            # PDF compatibility mock endpoint
+            content_len = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
+            try:
+                data = json.loads(post_body)
+            except Exception:
+                data = {}
+            body = json.dumps({"status": "created", "escalation_id": f"ESC-{len(global_memory.escalations)+1:04d}", "received": data}).encode("utf-8")
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
 
     def log_message(self, format: str, *args: Any) -> None:
         # Keep stdout concise
