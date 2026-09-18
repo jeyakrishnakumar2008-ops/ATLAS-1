@@ -1947,11 +1947,11 @@ def dispatch_request(
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps(result, indent=2).encode("utf-8")
 
-        elif path_clean == "/api/health":
+        elif path_clean in ("/api/health", "/health"):
             headers["Content-Type"] = "application/json"
             return 200, headers, json.dumps({"status": "OK", "study": "STUDY-042"}).encode("utf-8")
 
-        elif path_clean == "/api/graph":
+        elif path_clean in ("/api/graph", "/graph"):
             subject = params.get("subject", ["042-S07-001"])[0]
             if sentinel is None:
                 sentinel = StudySentinel(cut=12)
@@ -2019,7 +2019,7 @@ def dispatch_request(
         except Exception:
             data = {}
 
-        if path_clean == "/api/query":
+        if path_clean in ("/api/query", "/query"):
             question = data.get("question", "") if isinstance(data, dict) else post_text
             if sentinel is None:
                 sentinel = StudySentinel(cut=12)
@@ -2027,7 +2027,7 @@ def dispatch_request(
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps(result, indent=2).encode("utf-8")
 
-        elif path_clean == "/api/assistant":
+        elif path_clean in ("/api/assistant", "/assistant"):
             question = data.get("question", "") if isinstance(data, dict) else post_text
             context = data.get("context", {}) if isinstance(data, dict) else {}
             if sentinel is None:
@@ -2036,7 +2036,7 @@ def dispatch_request(
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps(result, indent=2).encode("utf-8")
 
-        elif path_clean == "/api/graph":
+        elif path_clean in ("/api/graph", "/graph"):
             subject = data.get("subject", "") if isinstance(data, dict) else post_text.strip()
             if not subject:
                 subject = "042-S07-001"

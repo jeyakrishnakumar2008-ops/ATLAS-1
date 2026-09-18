@@ -2,6 +2,38 @@
   "version": 2,
   "rewrites": [
     {
+      "source": "/api/graph",
+      "destination": "/api/graph.py"
+    },
+    {
+      "source": "/graph",
+      "destination": "/api/graph.py"
+    },
+    {
+      "source": "/api/query",
+      "destination": "/api/query.py"
+    },
+    {
+      "source": "/query",
+      "destination": "/api/query.py"
+    },
+    {
+      "source": "/api/health",
+      "destination": "/api/health.py"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/health.py"
+    },
+    {
+      "source": "/assistant",
+      "destination": "/api/index.py?__path=/assistant"
+    },
+    {
+      "source": "/api/assistant",
+      "destination": "/api/index.py?__path=/api/assistant"
+    },
+    {
       "source": "/(.*)",
       "destination": "/api/index.py?__path=/$1"
     }
