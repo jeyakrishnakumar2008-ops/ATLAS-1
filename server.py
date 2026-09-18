@@ -1880,50 +1880,57 @@ function renderMonitorView(data) {
 """
 
 
-class AtlasRequestHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
+def dispatch_request(
+    method: str,
+    path: str,
+    query_str: str = "",
+    body_bytes: bytes = b"",
+) -> tuple[int, dict[str, str], bytes]:
+    """
+    Central request router and handler used both by local server.py
+    and Vercel serverless functions (api/index.py).
+    """
+    global sentinel, pipeline
+    method = method.upper()
+    path_clean = path.strip()
+    if path_clean.endswith("/") and len(path_clean) > 1:
+        path_clean = path_clean[:-1]
 
-    def do_GET(self) -> None:
-        global sentinel
-        parsed = urlparse(self.path)
-        if parsed.path in ("/", "/index.html"):
-            body = HTML_TEMPLATE.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/api/health":
-            body = json.dumps({"status": "OK", "study": "STUDY-042"}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/api/graph":
-            params = parse_qs(parsed.query)
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+
+    if method == "OPTIONS":
+        return 204, headers, b""
+
+    params = parse_qs(query_str)
+
+    if method == "GET":
+        if path_clean in ("", "/", "/index.html"):
+            headers["Content-Type"] = "text/html; charset=utf-8"
+            return 200, headers, HTML_TEMPLATE.encode("utf-8")
+
+        elif path_clean == "/api/health":
+            headers["Content-Type"] = "application/json"
+            return 200, headers, json.dumps({"status": "OK", "study": "STUDY-042"}).encode("utf-8")
+
+        elif path_clean == "/api/graph":
             subject = params.get("subject", ["042-S07-001"])[0]
             if sentinel is None:
                 sentinel = StudySentinel(cut=12)
             graph_data = build_subject_graph(subject, sentinel)
-            body = json.dumps(graph_data, indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/api/monitor/status":
-            params = parse_qs(parsed.query)
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps(graph_data, indent=2).encode("utf-8")
+
+        elif path_clean == "/api/monitor/status":
             cut_arg = int(params.get("cut", [str(sentinel.cut if sentinel else 12)])[0])
             if sentinel is None or sentinel.cut != cut_arg:
                 sentinel = StudySentinel(cut=cut_arg)
-            pipeline = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
-            deviations = pipeline.compliance.check_compliance()
-            findings = pipeline.intake.run()
+            pipe = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
+            deviations = pipe.compliance.check_compliance()
+            findings = pipe.intake.run()
             decision_counts = {
                 "PENDING": sum(1 for e in global_memory.escalations.values() if e.status == "PENDING"),
                 "APPROVED": sum(1 for e in global_memory.escalations.values() if e.status == "APPROVED"),
@@ -1953,176 +1960,122 @@ class AtlasRequestHandler(BaseHTTPRequestHandler):
                 "deviations": [d.to_dict() for d in deviations[:30]],
                 "escalations": [e.to_dict() for e in global_memory.escalations.values()],
             }
-            body = json.dumps(res_obj, indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/api/monitor/run":
-            params = parse_qs(parsed.query)
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps(res_obj, indent=2).encode("utf-8")
+
+        elif path_clean == "/api/monitor/run":
             cut_arg = int(params.get("cut", [str(sentinel.cut if sentinel else 12)])[0])
             auto_adj = params.get("auto", ["false"])[0].lower() in ("true", "1")
             if sentinel is None or sentinel.cut != cut_arg:
                 sentinel = StudySentinel(cut=cut_arg)
-            pipeline = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
-            res_obj = pipeline.run_cycle(auto_adjudicate=auto_adj)
-            body = json.dumps(res_obj, indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
+            pipe = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
+            res_obj = pipe.run_cycle(auto_adjudicate=auto_adj)
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps(res_obj, indent=2).encode("utf-8")
+
         else:
-            self.send_response(404)
-            self.send_header("Content-Length", "0")
-            self.send_header("Connection", "close")
-            self.end_headers()
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 404, headers, json.dumps({"status": "error", "message": "Not Found"}).encode("utf-8")
 
-    def do_POST(self) -> None:
-        global sentinel
-        parsed = urlparse(self.path)
-        if parsed.path == "/api/query":
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len).decode("utf-8")
-            try:
-                data = json.loads(post_body)
-                question = data.get("question", "")
-            except Exception:
-                question = post_body
+    elif method == "POST":
+        post_text = body_bytes.decode("utf-8", errors="replace") if body_bytes else "{}"
+        try:
+            data = json.loads(post_text)
+        except Exception:
+            data = {}
 
+        if path_clean == "/api/query":
+            question = data.get("question", "") if isinstance(data, dict) else post_text
             if sentinel is None:
                 sentinel = StudySentinel(cut=12)
-
             result = parse_and_route_query(question, sentinel)
-            body = json.dumps(result, indent=2).encode("utf-8")
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps(result, indent=2).encode("utf-8")
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/api/graph":
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len).decode("utf-8")
-            try:
-                data = json.loads(post_body)
-                subject = data.get("subject", "")
-            except Exception:
-                subject = post_body.strip()
-
+        elif path_clean == "/api/graph":
+            subject = data.get("subject", "") if isinstance(data, dict) else post_text.strip()
+            if not subject:
+                subject = "042-S07-001"
             if sentinel is None:
                 sentinel = StudySentinel(cut=12)
-
             graph_data = build_subject_graph(subject, sentinel)
-            body = json.dumps(graph_data, indent=2).encode("utf-8")
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps(graph_data, indent=2).encode("utf-8")
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/api/monitor/run":
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
-            try:
-                data = json.loads(post_body)
-            except Exception:
-                data = {}
+        elif path_clean == "/api/monitor/run":
             cut_arg = int(data.get("cut", sentinel.cut if sentinel else 12))
             auto_adj = bool(data.get("auto_adjudicate", False))
             if sentinel is None or sentinel.cut != cut_arg:
                 sentinel = StudySentinel(cut=cut_arg)
-            pipeline = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
-            res_obj = pipeline.run_cycle(auto_adjudicate=auto_adj)
-            body = json.dumps(res_obj, indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/api/monitor/decision":
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len).decode("utf-8")
-            try:
-                data = json.loads(post_body)
-            except Exception:
-                data = {}
+            pipe = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
+            res_obj = pipe.run_cycle(auto_adjudicate=auto_adj)
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps(res_obj, indent=2).encode("utf-8")
+
+        elif path_clean == "/api/monitor/decision":
             esc_id = data.get("id", "")
             action = data.get("action", "APPROVED")
             reason = data.get("reason", "")
-
             if sentinel is None:
                 sentinel = StudySentinel(cut=12)
-            pipeline = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
-
+            pipe = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
             esc_item = global_memory.escalations.get(esc_id)
             if not esc_item:
-                body = json.dumps({"status": "error", "message": f"Escalation {esc_id} not found"}).encode("utf-8")
-                self.send_response(404)
-            else:
-                updated = pipeline.decision_center.adjudicate(esc_item, action=action, custom_reason=reason, memory=global_memory)
-                body = json.dumps({"status": "success", "escalation": updated.to_dict()}, indent=2).encode("utf-8")
-                self.send_response(200)
+                headers["Content-Type"] = "application/json; charset=utf-8"
+                return 404, headers, json.dumps({"status": "error", "message": f"Escalation {esc_id} not found"}).encode("utf-8")
+            updated = pipe.decision_center.adjudicate(esc_item, action=action, custom_reason=reason, memory=global_memory)
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps({"status": "success", "escalation": updated.to_dict()}, indent=2).encode("utf-8")
 
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/api/monitor/reset":
+        elif path_clean == "/api/monitor/reset":
             global_memory.reset()
-            body = json.dumps({"status": "reset", "cycle": 0}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/queries":
-            # PDF compatibility mock endpoint
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
-            try:
-                data = json.loads(post_body)
-            except Exception:
-                data = {}
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps({"status": "reset", "cycle": 0}).encode("utf-8")
+
+        elif path_clean == "/queries":
             body = json.dumps({"status": "created", "query_id": f"QRY-{len(global_memory.sent_queries)+1:04d}", "received": data}).encode("utf-8")
-            self.send_response(201)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        elif parsed.path == "/escalations":
-            # PDF compatibility mock endpoint
-            content_len = int(self.headers.get("Content-Length", 0))
-            post_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
-            try:
-                data = json.loads(post_body)
-            except Exception:
-                data = {}
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 201, headers, body
+
+        elif path_clean == "/escalations":
             body = json.dumps({"status": "created", "escalation_id": f"ESC-{len(global_memory.escalations)+1:04d}", "received": data}).encode("utf-8")
-            self.send_response(201)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 201, headers, body
+
+        else:
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 404, headers, json.dumps({"status": "error", "message": "Not Found"}).encode("utf-8")
+
+    headers["Content-Type"] = "application/json; charset=utf-8"
+    return 405, headers, json.dumps({"status": "error", "message": "Method Not Allowed"}).encode("utf-8")
+
+
+class AtlasRequestHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        status, headers, body = dispatch_request("GET", parsed.path, parsed.query, b"")
+        self.send_response(status)
+        for k, v in headers.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        content_len = int(self.headers.get("Content-Length", 0))
+        post_body = self.rfile.read(content_len) if content_len > 0 else b""
+        status, headers, body = dispatch_request("POST", parsed.path, parsed.query, post_body)
+        self.send_response(status)
+        for k, v in headers.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, format: str, *args: Any) -> None:
         # Keep stdout concise
