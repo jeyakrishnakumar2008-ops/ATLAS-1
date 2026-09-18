@@ -1916,6 +1916,8 @@ def dispatch_request(
     path_clean = path.strip()
     if path_clean.endswith("/") and len(path_clean) > 1:
         path_clean = path_clean[:-1]
+    if not path_clean.startswith("/"):
+        path_clean = "/" + path_clean
 
     headers = {
         "Access-Control-Allow-Origin": "*",
@@ -2092,12 +2094,35 @@ def dispatch_request(
     return 405, headers, json.dumps({"status": "error", "message": "Method Not Allowed"}).encode("utf-8")
 
 
+def _extract_routed_path_and_query(raw_url: str) -> tuple[str, str]:
+    """
+    Extracts routed path and clean query string.
+    Handles Vercel rewrite parameter (?__path=...) and reverse proxy paths.
+    """
+    parsed = urlparse(raw_url)
+    p = parsed.path
+    q = parsed.query
+    if q:
+        from urllib.parse import parse_qs, urlencode
+        params = parse_qs(q, keep_blank_values=True)
+        for k in ("__path", "__vercel_path", "original_path"):
+            if k in params:
+                p = params.pop(k)[0]
+                q = urlencode([(param_key, v) for param_key, vals in params.items() for v in vals])
+                break
+    if p in ("/api/index.py", "/api/index", ""):
+        p = "/"
+    if not p.startswith("/"):
+        p = "/" + p
+    return p, q
+
+
 class AtlasRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        status, headers, body = dispatch_request("GET", parsed.path, parsed.query, b"")
+        p, q = _extract_routed_path_and_query(self.path)
+        status, headers, body = dispatch_request("GET", p, q, b"")
         self.send_response(status)
         for k, v in headers.items():
             self.send_header(k, v)
@@ -2107,10 +2132,10 @@ class AtlasRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self) -> None:
-        parsed = urlparse(self.path)
+        p, q = _extract_routed_path_and_query(self.path)
         content_len = int(self.headers.get("Content-Length", 0))
         post_body = self.rfile.read(content_len) if content_len > 0 else b""
-        status, headers, body = dispatch_request("POST", parsed.path, parsed.query, post_body)
+        status, headers, body = dispatch_request("POST", p, q, post_body)
         self.send_response(status)
         for k, v in headers.items():
             self.send_header(k, v)

@@ -52,19 +52,54 @@ def _find_data_dir() -> Path:
     """
     Walk up from this file and find the 'data' folder that contains DM.csv.
     Handles the double-nested hackathon-data/hackathon-data layout.
+    Works across local runs, standard packages, and Vercel serverless environments.
     """
-    base = Path(__file__).resolve().parent
-    # Try known relative path first (most common layout)
-    candidate = base / "hackathon-data" / "hackathon-data" / "data"
-    if (candidate / "DM.csv").exists():
-        return candidate
-    # Fallback: walk subdirectories up to 4 levels deep
-    for depth in range(1, 5):
-        for sub in base.rglob("DM.csv"):
-            return sub.parent
-    raise FileNotFoundError(
-        f"Cannot find data directory containing DM.csv under {base}"
-    )
+    import sys
+    search_bases = [
+        Path(__file__).resolve().parent,
+        Path.cwd(),
+        Path(__file__).resolve().parent.parent,
+        Path("/var/task") if Path("/var/task").exists() else None,
+    ]
+    seen: set[str] = set()
+    for b in search_bases:
+        if b is None:
+            continue
+        try:
+            b_res = b.resolve()
+        except Exception:
+            b_res = b
+        b_str = str(b_res)
+        if b_str in seen:
+            continue
+        seen.add(b_str)
+
+        # 1. Double nested hackathon-data/hackathon-data/data
+        c1 = b_res / "hackathon-data" / "hackathon-data" / "data"
+        if (c1 / "DM.csv").exists():
+            return c1
+
+        # 2. Single nested hackathon-data/data
+        c2 = b_res / "hackathon-data" / "data"
+        if (c2 / "DM.csv").exists():
+            return c2
+
+        # 3. Direct data folder
+        c3 = b_res / "data"
+        if (c3 / "DM.csv").exists():
+            return c3
+
+        # 4. Fallback search with rglob
+        try:
+            for sub in b_res.rglob("DM.csv"):
+                if sub.is_file():
+                    return sub.parent
+        except Exception:
+            pass
+
+    msg = f"[ATLAS ERROR] Cannot find data directory containing DM.csv. Searched bases: {list(seen)}"
+    sys.stderr.write(msg + "\n")
+    raise FileNotFoundError(msg)
 
 
 DATA_DIR: Path = _find_data_dir()
