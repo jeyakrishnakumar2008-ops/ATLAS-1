@@ -1,0 +1,57 @@
+{
+  "study_id": "STUDY-042",
+  "cut": 12,
+  "protocol_version": 3,
+  "total_subjects": 241,
+  "total_sites": 12,
+  "site_ids": [
+    "S01",
+    "S02",
+    "S03",
+    "S04",
+    "S05",
+    "S06",
+    "S07",
+    "S08",
+    "S09",
+    "S10",
+    "S11",
+    "S12"
+  ],
+  "arms": {
+    "DRUG": 128,
+    "PLACEBO": 113
+  },
+  "domain_record_counts": {
+    "DM": 241,
+    "AE": 291,
+    "LB": 14160,
+    "VS": 7080,
+    "EX": 2114,
+    "CM": 468,
+    "DS": 240,
+    "MH": 488,
+    "EG": 1400
+  },
+  "total_records_indexed": 26482,
+  "reference_ranges_count": 8,
+  "cuts_defined": 12,
+  "corrections_tracked": 200,
+  "graph_topology": {
+    "root": "Study(STUDY-042)",
+    "primary_entity": "Subject(USUBJID)",
+    "edge_types": [
+      "ENROLLED_IN_SITE",
+      "ASSIGNED_TO_ARM",
+      "EXPERIENCED_AE",
+      "MEASURED_LAB",
+      "MEASURED_VITAL",
+      "ADMINISTERED_EXPOSURE",
+      "CONCOMITANT_MEDICATION",
+      "RECORDED_MEDICAL_HISTORY",
+      "RECORDED_DISPOSITION",
+      "MEASURED_ECG"
+    ],
+    "total_edges": 26482
+  }
+}
