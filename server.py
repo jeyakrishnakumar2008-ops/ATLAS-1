@@ -36,10 +36,12 @@ from data_loader import to_float
 from evidence import make_record_ref, record_ref_exists
 from rules import VISIT_DAYS
 from monitor import AtlasMonitorPipeline, global_memory, EscalationItem
+from assistant import HTML_ASSISTANT_TEMPLATE, process_assistant_query
 
 # Global sentinel instance (loaded once on startup)
 sentinel: StudySentinel | None = None
 pipeline: AtlasMonitorPipeline | None = None
+
 
 
 
@@ -1874,6 +1876,25 @@ function renderMonitorView(data) {
     document.getElementById('repSummary').innerText = report.summary || '';
   }
 }
+
+// Deep-link support for cross-view navigation (e.g. from Assistant)
+window.addEventListener('DOMContentLoaded', () => {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const view = p.get('view');
+    const subj = p.get('subject');
+    if (subj) {
+      const sInp = document.getElementById('subjectInput');
+      if (sInp) sInp.value = subj;
+    }
+    if (view === 'graph') {
+      switchView('graph');
+      if (subj) loadSubjectGraph();
+    } else if (view === 'monitor') {
+      switchView('monitor');
+    }
+  } catch (e) {}
+});
 </script>
 </body>
 </html>
@@ -1911,6 +1932,18 @@ def dispatch_request(
         if path_clean in ("", "/", "/index.html"):
             headers["Content-Type"] = "text/html; charset=utf-8"
             return 200, headers, HTML_TEMPLATE.encode("utf-8")
+
+        elif path_clean in ("/assistant", "/assistant.html"):
+            headers["Content-Type"] = "text/html; charset=utf-8"
+            return 200, headers, HTML_ASSISTANT_TEMPLATE.encode("utf-8")
+
+        elif path_clean == "/api/assistant":
+            q = params.get("q", [""])[0] or params.get("question", [""])[0]
+            if sentinel is None:
+                sentinel = StudySentinel(cut=12)
+            result = process_assistant_query(q, {}, sentinel)
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps(result, indent=2).encode("utf-8")
 
         elif path_clean == "/api/health":
             headers["Content-Type"] = "application/json"
@@ -1989,6 +2022,15 @@ def dispatch_request(
             if sentinel is None:
                 sentinel = StudySentinel(cut=12)
             result = parse_and_route_query(question, sentinel)
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            return 200, headers, json.dumps(result, indent=2).encode("utf-8")
+
+        elif path_clean == "/api/assistant":
+            question = data.get("question", "") if isinstance(data, dict) else post_text
+            context = data.get("context", {}) if isinstance(data, dict) else {}
+            if sentinel is None:
+                sentinel = StudySentinel(cut=12)
+            result = process_assistant_query(question, context, sentinel)
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps(result, indent=2).encode("utf-8")
 
