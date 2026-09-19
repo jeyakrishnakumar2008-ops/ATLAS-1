@@ -1142,11 +1142,15 @@ function switchView(view) {
   if (view === 'graph' && !currentGraphData) {
     loadSubjectGraph();
   } else if (view === 'monitor' && !currentMonitorData) {
-    // Optionally trigger initial load of monitor status
     fetch('/api/monitor/status')
       .then(r => r.json())
-      .then(d => { if (d.report) renderMonitorView(d); })
-      .catch(() => {});
+      .then(d => {
+        if (d && (d.report || d.findings)) {
+          currentMonitorData = d;
+          renderMonitorView(d);
+        }
+      })
+      .catch(err => console.error('Monitor status error:', err));
   }
 }
 
@@ -1748,12 +1752,14 @@ function renderMonitorView(data) {
 
   // Pipeline Cards
   const report = data.report || {};
+  const totalQueries = report.query_count !== undefined ? report.query_count : (data.queries ? data.queries.length : 0);
+  const totalEscalations = report.escalation_count !== undefined ? report.escalation_count : (data.escalations ? data.escalations.length : 0);
   document.getElementById('pipeFindings').innerText = report.finding_count !== undefined ? report.finding_count : (data.findings ? data.findings.length : 0);
   document.getElementById('pipeRisks').innerText = report.finding_count !== undefined ? report.finding_count : 0;
-  document.getElementById('pipeActions').innerText = (report.new_query_count !== undefined ? report.new_query_count : 0) + ' / ' + (report.new_escalation_count !== undefined ? report.new_escalation_count : 0);
+  document.getElementById('pipeActions').innerText = totalQueries + ' / ' + totalEscalations;
   document.getElementById('pipeCompliance').innerText = report.deviation_count !== undefined ? report.deviation_count : (data.deviations ? data.deviations.length : 0);
   document.getElementById('pipeDecisions').innerText = report.human_decisions ? (report.human_decisions.PENDING || 0) : (data.escalations ? data.escalations.filter(e => e.status === 'PENDING').length : 0);
-  document.getElementById('pipeCycles').innerText = data.cycle || 1;
+  document.getElementById('pipeCycles').innerText = data.cycle !== undefined ? data.cycle : 1;
 
   // Escalations Table
   const escBody = document.getElementById('escalationsBody');
@@ -1959,11 +1965,17 @@ def dispatch_request(
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps(graph_data, indent=2).encode("utf-8")
 
-        elif path_clean == "/api/monitor/status":
+        elif path_clean in ("/api/monitor/status", "/monitor/status"):
             cut_arg = int(params.get("cut", [str(sentinel.cut if sentinel else 12)])[0])
             if sentinel is None or sentinel.cut != cut_arg:
                 sentinel = StudySentinel(cut=cut_arg)
             pipe = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
+            if global_memory.cycle_count == 0:
+                res_obj = pipe.run_cycle(auto_adjudicate=False)
+                res_obj["trace"] = [t.to_dict() for t in global_memory.trace]
+                headers["Content-Type"] = "application/json; charset=utf-8"
+                return 200, headers, json.dumps(res_obj, indent=2).encode("utf-8")
+
             deviations = pipe.compliance.check_compliance()
             findings = pipe.intake.run()
             decision_counts = {
@@ -1994,17 +2006,19 @@ def dispatch_request(
                 "queries": [q.to_dict() for q in global_memory.active_queries],
                 "deviations": [d.to_dict() for d in deviations[:30]],
                 "escalations": [e.to_dict() for e in global_memory.escalations.values()],
+                "trace": [t.to_dict() for t in global_memory.trace],
             }
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps(res_obj, indent=2).encode("utf-8")
 
-        elif path_clean == "/api/monitor/run":
+        elif path_clean in ("/api/monitor/run", "/monitor/run"):
             cut_arg = int(params.get("cut", [str(sentinel.cut if sentinel else 12)])[0])
             auto_adj = params.get("auto", ["false"])[0].lower() in ("true", "1")
             if sentinel is None or sentinel.cut != cut_arg:
                 sentinel = StudySentinel(cut=cut_arg)
             pipe = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
             res_obj = pipe.run_cycle(auto_adjudicate=auto_adj)
+            res_obj["trace"] = [t.to_dict() for t in global_memory.trace]
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps(res_obj, indent=2).encode("utf-8")
 
@@ -2046,17 +2060,18 @@ def dispatch_request(
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps(graph_data, indent=2).encode("utf-8")
 
-        elif path_clean == "/api/monitor/run":
+        elif path_clean in ("/api/monitor/run", "/monitor/run"):
             cut_arg = int(data.get("cut", sentinel.cut if sentinel else 12))
             auto_adj = bool(data.get("auto_adjudicate", False))
             if sentinel is None or sentinel.cut != cut_arg:
                 sentinel = StudySentinel(cut=cut_arg)
             pipe = AtlasMonitorPipeline(sentinel=sentinel, memory=global_memory)
             res_obj = pipe.run_cycle(auto_adjudicate=auto_adj)
+            res_obj["trace"] = [t.to_dict() for t in global_memory.trace]
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps(res_obj, indent=2).encode("utf-8")
 
-        elif path_clean == "/api/monitor/decision":
+        elif path_clean in ("/api/monitor/decision", "/monitor/decision"):
             esc_id = data.get("id", "")
             action = data.get("action", "APPROVED")
             reason = data.get("reason", "")
@@ -2071,7 +2086,7 @@ def dispatch_request(
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps({"status": "success", "escalation": updated.to_dict()}, indent=2).encode("utf-8")
 
-        elif path_clean == "/api/monitor/reset":
+        elif path_clean in ("/api/monitor/reset", "/monitor/reset"):
             global_memory.reset()
             headers["Content-Type"] = "application/json; charset=utf-8"
             return 200, headers, json.dumps({"status": "reset", "cycle": 0}).encode("utf-8")

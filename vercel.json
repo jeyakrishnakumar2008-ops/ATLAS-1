@@ -34,6 +34,14 @@
       "destination": "/api/index.py?__path=/api/assistant"
     },
     {
+      "source": "/api/monitor/(.*)",
+      "destination": "/api/index.py?__path=/api/monitor/$1"
+    },
+    {
+      "source": "/monitor/(.*)",
+      "destination": "/api/index.py?__path=/api/monitor/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/api/index.py?__path=/$1"
     }
